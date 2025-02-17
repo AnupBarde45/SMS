@@ -1,6 +1,7 @@
 package com.example.myapplication1;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
@@ -8,11 +9,12 @@ import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.telephony.SmsManager;
-import android.view.View;
 import android.widget.Button;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -30,7 +32,7 @@ public class MainActivity extends AppCompatActivity {
     };
 
     private LocationManager locationManager;
-    private String currentLocation = "⚠️ I need help. Location: Not Available";
+    private String currentLocation = null;
     private LocationListener locationListener;
     private boolean isLocationReceived = false;
 
@@ -40,10 +42,53 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         Button sosButton = findViewById(R.id.sosButton);
-        sosButton.setOnClickListener(v -> requestLocationAndSendSOS());
+        Button emergencyContactsButton = findViewById(R.id.emergencyContactsButton);
+
+        sosButton.setOnClickListener(v -> showConfirmationDialog());
+
+        emergencyContactsButton.setOnClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, EmergencyContactsActivity.class);
+            startActivity(intent);
+        });
+    }
+
+    private void showConfirmationDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Send SOS")
+                .setMessage("Are you sure you want to send an SOS alert?")
+                .setPositiveButton("Yes", (dialog, which) -> checkLocationEnabled())
+                .setNegativeButton("No", (dialog, which) -> dialog.dismiss())
+                .setCancelable(false)
+                .show();
+    }
+
+    private void checkLocationEnabled() {
+        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (locationManager != null && !locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            showLocationEnableDialog();
+        } else {
+            requestLocationAndSendSOS();
+        }
+    }
+
+    private void showLocationEnableDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Enable Location")
+                .setMessage("Your location is turned off. Please enable it for SOS to work.")
+                .setPositiveButton("Go to Settings", (dialog, which) -> {
+                    Intent intent = new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+                    startActivity(intent);
+                })
+                .setNegativeButton("Cancel", (dialog, which) -> {
+                    Toast.makeText(this, "❌ SOS not sent. Location required.", Toast.LENGTH_SHORT).show();
+                })
+                .setCancelable(false)
+                .show();
     }
 
     private void requestLocationAndSendSOS() {
+        isLocationReceived = false;  // Reset flag to allow multiple SOS sends
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED) {
             getLocationAndSendSMS();
@@ -55,20 +100,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void getLocationAndSendSMS() {
-        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
-
         if (locationManager == null) {
-            sendSOSMessage();
+            Toast.makeText(this, "❌ Location unavailable. SOS not sent.", Toast.LENGTH_SHORT).show();
             return;
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
-            sendSOSMessage();
+            Toast.makeText(this, "❌ Location permission denied. SOS not sent.", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // Fallback: Use Last Known Location if available
         Location lastKnownLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
         if (lastKnownLocation != null) {
             updateAndSendLocation(lastKnownLocation);
@@ -83,21 +125,14 @@ public class MainActivity extends AppCompatActivity {
                     updateAndSendLocation(location);
                 }
             }
-
-            @Override
-            public void onProviderDisabled(String provider) {
-                sendSOSMessage();
-            }
         };
 
-        // Request location updates from both GPS and Network
         locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0, 0, locationListener);
         locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0, 0, locationListener);
 
-        // Timeout: If location isn't found in 10s, send SMS without location
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             if (!isLocationReceived) {
-                sendSOSMessage();
+                Toast.makeText(this, "❌ Location not found. SOS not sent.", Toast.LENGTH_SHORT).show();
                 locationManager.removeUpdates(locationListener);
             }
         }, 10000);
@@ -107,16 +142,18 @@ public class MainActivity extends AppCompatActivity {
         double latitude = location.getLatitude();
         double longitude = location.getLongitude();
         currentLocation = "⚠️ SOS Alert! I need help. Location: \nhttps://maps.google.com/?q=" + latitude + "," + longitude;
-
-        // Stop location updates after getting a location
         locationManager.removeUpdates(locationListener);
         sendSOSMessage();
     }
 
     private void sendSOSMessage() {
+        if (currentLocation == null) {
+            Toast.makeText(this, "❌ Location unavailable. SOS not sent.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
                 == PackageManager.PERMISSION_GRANTED) {
-
             SmsManager smsManager = SmsManager.getDefault();
             for (String phoneNumber : phoneNumbers) {
                 try {
@@ -127,7 +164,6 @@ public class MainActivity extends AppCompatActivity {
                     Toast.makeText(this, "❌ Failed to send SOS to: " + phoneNumber, Toast.LENGTH_SHORT).show();
                 }
             }
-
         } else {
             ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.SEND_SMS},
@@ -143,8 +179,7 @@ public class MainActivity extends AppCompatActivity {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 getLocationAndSendSMS();
             } else {
-                Toast.makeText(this, "❌ Location permission denied! Sending SOS without location.", Toast.LENGTH_SHORT).show();
-                sendSOSMessage();
+                Toast.makeText(this, "❌ Location permission denied! SOS not sent.", Toast.LENGTH_SHORT).show();
             }
         } else if (requestCode == PERMISSION_REQUEST_SEND_SMS) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
